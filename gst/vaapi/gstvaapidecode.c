@@ -28,8 +28,7 @@
  * the vaapisink element.
  */
 
-#include "config.h"
-
+#include "gst/vaapi/sysdeps.h"
 #include <gst/vaapi/gstvaapidisplay.h>
 #include <gst/vaapi/gstvaapivideobuffer.h>
 #include <gst/video/videocontext.h>
@@ -189,28 +188,30 @@ gst_vaapidecode_step(GstVaapiDecode *decode)
     GstVaapiDecoderStatus status;
     GstBuffer *buffer;
     GstFlowReturn ret;
-    guint tries;
+    GstClockTime timestamp;
+    gint64 end_time;
 
     for (;;) {
-        tries = 0;
-    again:
+        end_time = decode->render_time_base;
+        if (!end_time)
+            end_time = g_get_monotonic_time();
+        end_time += GST_TIME_AS_USECONDS(decode->last_buffer_time);
+        end_time += G_TIME_SPAN_SECOND;
+
         proxy = gst_vaapi_decoder_get_surface(decode->decoder, &status);
         if (!proxy) {
             if (status == GST_VAAPI_DECODER_STATUS_ERROR_NO_SURFACE) {
-                /* Wait for a VA surface to be displayed and free'd */
-                if (++tries > 100)
-                    goto error_decode_timeout;
-                GTimeVal timeout;
-                g_get_current_time(&timeout);
-                g_time_val_add(&timeout, 10000); /* 10 ms each step */
+                gboolean was_signalled;
                 g_mutex_lock(decode->decoder_mutex);
-                g_cond_timed_wait(
+                was_signalled = g_cond_wait_until(
                     decode->decoder_ready,
                     decode->decoder_mutex,
-                    &timeout
+                    end_time
                 );
                 g_mutex_unlock(decode->decoder_mutex);
-                goto again;
+                if (was_signalled)
+                    continue;
+                goto error_decode_timeout;
             }
             if (status != GST_VAAPI_DECODER_STATUS_ERROR_NO_DATA)
                 goto error_decode;
@@ -228,7 +229,13 @@ gst_vaapidecode_step(GstVaapiDecode *decode)
         if (!buffer)
             goto error_create_buffer;
 
-        GST_BUFFER_TIMESTAMP(buffer) = GST_VAAPI_SURFACE_PROXY_TIMESTAMP(proxy);
+        timestamp = GST_VAAPI_SURFACE_PROXY_TIMESTAMP(proxy);
+        if (!decode->render_time_base)
+            decode->render_time_base = g_get_monotonic_time();
+        decode->last_buffer_time = timestamp;
+
+        GST_BUFFER_TIMESTAMP(buffer) = timestamp;
+        GST_BUFFER_DURATION(buffer) = GST_VAAPI_SURFACE_PROXY_DURATION(proxy);
         gst_buffer_set_caps(buffer, GST_PAD_CAPS(decode->srcpad));
 
         if (GST_VAAPI_SURFACE_PROXY_TFF(proxy))
@@ -295,12 +302,16 @@ gst_vaapidecode_ensure_display(GstVaapiDecode *decode)
         &decode->display);
 }
 
+static inline guint
+gst_vaapi_codec_from_caps(GstCaps *caps)
+{
+    return gst_vaapi_profile_get_codec(gst_vaapi_profile_from_caps(caps));
+}
+
 static gboolean
 gst_vaapidecode_create(GstVaapiDecode *decode, GstCaps *caps)
 {
     GstVaapiDisplay *dpy;
-    GstStructure *structure;
-    int version;
 
     if (!gst_vaapidecode_ensure_display(decode))
         return FALSE;
@@ -314,30 +325,30 @@ gst_vaapidecode_create(GstVaapiDecode *decode, GstCaps *caps)
     if (!decode->decoder_ready)
         return FALSE;
 
-    structure = gst_caps_get_structure(caps, 0);
-    if (!structure)
-        return FALSE;
-
-    if (gst_structure_has_name(structure, "video/x-h264"))
-        decode->decoder = gst_vaapi_decoder_h264_new(dpy, caps);
-    else if (gst_structure_has_name(structure, "video/mpeg")) {
-        if (!gst_structure_get_int(structure, "mpegversion", &version))
-            return FALSE;
-        if (version == 2)
-            decode->decoder = gst_vaapi_decoder_mpeg2_new(dpy, caps);
-        else if (version == 4)
-            decode->decoder = gst_vaapi_decoder_mpeg4_new(dpy, caps);
-    }
-    else if (gst_structure_has_name(structure, "video/x-wmv"))
-        decode->decoder = gst_vaapi_decoder_vc1_new(dpy, caps);
-    else if (gst_structure_has_name(structure, "video/x-h263") ||
-             gst_structure_has_name(structure, "video/x-divx") ||
-             gst_structure_has_name(structure, "video/x-xvid"))
+    switch (gst_vaapi_codec_from_caps(caps)) {
+    case GST_VAAPI_CODEC_MPEG2:
+        decode->decoder = gst_vaapi_decoder_mpeg2_new(dpy, caps);
+        break;
+    case GST_VAAPI_CODEC_MPEG4:
+    case GST_VAAPI_CODEC_H263:
         decode->decoder = gst_vaapi_decoder_mpeg4_new(dpy, caps);
+        break;
+    case GST_VAAPI_CODEC_H264:
+        decode->decoder = gst_vaapi_decoder_h264_new(dpy, caps);
+        break;
+    case GST_VAAPI_CODEC_WMV3:
+    case GST_VAAPI_CODEC_VC1:
+        decode->decoder = gst_vaapi_decoder_vc1_new(dpy, caps);
+        break;
 #if USE_JPEG_DECODER
-    else if (gst_structure_has_name(structure, "image/jpeg"))
+    case GST_VAAPI_CODEC_JPEG:
         decode->decoder = gst_vaapi_decoder_jpeg_new(dpy, caps);
+        break;
 #endif
+    default:
+        decode->decoder = NULL;
+        break;
+    }
     if (!decode->decoder)
         return FALSE;
 
@@ -381,10 +392,16 @@ gst_vaapidecode_destroy(GstVaapiDecode *decode)
 static gboolean
 gst_vaapidecode_reset(GstVaapiDecode *decode, GstCaps *caps)
 {
-    if (decode->decoder &&
-        decode->decoder_caps &&
-        gst_caps_is_always_compatible(caps, decode->decoder_caps))
-        return TRUE;
+    GstVaapiCodec codec;
+
+    /* Only reset decoder if codec type changed */
+    if (decode->decoder && decode->decoder_caps) {
+        if (gst_caps_is_always_compatible(caps, decode->decoder_caps))
+            return TRUE;
+        codec = gst_vaapi_codec_from_caps(caps);
+        if (codec == gst_vaapi_decoder_get_codec(decode->decoder))
+            return TRUE;
+    }
 
     gst_vaapidecode_destroy(decode);
     return gst_vaapidecode_create(decode, caps);
@@ -709,6 +726,8 @@ gst_vaapidecode_init(GstVaapiDecode *decode)
     decode->decoder_caps        = NULL;
     decode->allowed_caps        = NULL;
     decode->delayed_new_seg     = NULL;
+    decode->render_time_base    = 0;
+    decode->last_buffer_time    = 0;
     decode->is_ready            = FALSE;
 
     /* Pad through which data comes in to the element */
