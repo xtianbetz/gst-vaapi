@@ -63,25 +63,10 @@ typedef struct {
 } DisplayMap;
 
 static const DisplayMap g_display_map[] = {
-#if USE_WAYLAND
-    { "wayland",
-      GST_VAAPI_DISPLAY_TYPE_WAYLAND,
-      gst_vaapi_display_wayland_new },
-#endif
-#if USE_X11
-    { "x11",
-      GST_VAAPI_DISPLAY_TYPE_X11,
-      gst_vaapi_display_x11_new },
-#endif
 #if USE_GLX
     { "glx",
       GST_VAAPI_DISPLAY_TYPE_GLX,
       gst_vaapi_display_glx_new },
-#endif
-#if USE_DRM
-    { "drm",
-      GST_VAAPI_DISPLAY_TYPE_DRM,
-      gst_vaapi_display_drm_new },
 #endif
     { NULL, }
 };
