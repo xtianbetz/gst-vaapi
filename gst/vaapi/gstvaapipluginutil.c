@@ -22,7 +22,11 @@
  */
 
 #include "gst/vaapi/sysdeps.h"
+#if !GST_CHECK_VERSION(1,1,0)
 #include <gst/video/videocontext.h>
+#else
+#include <gst/vaapi/gstvaapivideocontext.h>
+#endif
 #if USE_DRM
 # include <gst/vaapi/gstvaapidisplay_drm.h>
 #endif
@@ -68,15 +72,15 @@ static const DisplayMap g_display_map[] = {
       GST_VAAPI_DISPLAY_TYPE_WAYLAND,
       gst_vaapi_display_wayland_new },
 #endif
-#if USE_X11
-    { "x11",
-      GST_VAAPI_DISPLAY_TYPE_X11,
-      gst_vaapi_display_x11_new },
-#endif
 #if USE_GLX
     { "glx",
       GST_VAAPI_DISPLAY_TYPE_GLX,
       gst_vaapi_display_glx_new },
+#endif
+#if USE_X11
+    { "x11",
+      GST_VAAPI_DISPLAY_TYPE_X11,
+      gst_vaapi_display_x11_new },
 #endif
 #if USE_DRM
     { "drm",
@@ -86,45 +90,22 @@ static const DisplayMap g_display_map[] = {
     { NULL, }
 };
 
-gboolean
-gst_vaapi_ensure_display(
-    gpointer             element,
-    GstVaapiDisplayType  display_type,
-    GstVaapiDisplay    **display_ptr
-)
+static GstVaapiDisplay *
+gst_vaapi_create_display(GstVaapiDisplayType *display_type)
 {
-    GstVaapiDisplay *display;
-    GstVideoContext *context;
+    GstVaapiDisplay *display = NULL;
     const DisplayMap *m;
 
-    g_return_val_if_fail(GST_IS_VIDEO_CONTEXT(element), FALSE);
-    g_return_val_if_fail(display_ptr != NULL, FALSE);
-
-    /* Already exist ? */
-    display = *display_ptr;
-    if (display)
-        return TRUE;
-
-    context = GST_VIDEO_CONTEXT(element);
-    g_return_val_if_fail(context != NULL, FALSE);
-
-    gst_video_context_prepare(context, display_types);
-
-    /* Neighbour found and it updated the display */
-    if (*display_ptr)
-        return TRUE;
-
-    /* If no neighboor, or application not interested, use system default */
     for (m = g_display_map; m->type_str != NULL; m++) {
-        if (display_type != GST_VAAPI_DISPLAY_TYPE_ANY &&
-            display_type != m->type)
+        if (*display_type != GST_VAAPI_DISPLAY_TYPE_ANY &&
+            *display_type != m->type)
             continue;
 
         display = m->create_display(NULL);
         if (display) {
             /* FIXME: allocator should return NULL if an error occurred */
             if (gst_vaapi_display_get_display(display)) {
-                display_type = m->type;
+                *display_type = m->type;
                 break;
             }
             gst_vaapi_display_unref(display);
@@ -135,8 +116,56 @@ gst_vaapi_ensure_display(
             break;
     }
 
+    return display;
+}
+
+gboolean
+gst_vaapi_ensure_display(
+    gpointer             element,
+    GstVaapiDisplayType  display_type,
+    GstVaapiDisplay    **display_ptr
+)
+{
+    GstVaapiDisplay *display;
+    GstVideoContext *context;
+
+    g_return_val_if_fail(GST_IS_VIDEO_CONTEXT(element), FALSE);
+    g_return_val_if_fail(display_ptr != NULL, FALSE);
+
+    /* Already exist ? */
+    GST_OBJECT_LOCK(element);
+    display = *display_ptr;
+    if (display) {
+        GST_OBJECT_UNLOCK(element);
+        return TRUE;
+    }
+    GST_OBJECT_UNLOCK(element);
+
+    context = GST_VIDEO_CONTEXT(element);
+    g_return_val_if_fail(context != NULL, FALSE);
+
+    gst_video_context_prepare(context, display_types);
+
+    /* Neighbour found and it updated the display */
+    GST_OBJECT_LOCK(element);
+    if (*display_ptr) {
+        GST_OBJECT_UNLOCK(element);
+        return TRUE;
+    }
+    GST_OBJECT_UNLOCK(element);
+
+    /* If no neighboor, or application not interested, use system default */
+    display = gst_vaapi_create_display(&display_type);
+
+    GST_OBJECT_LOCK(element);
     if (display_ptr)
         *display_ptr = display;
+    GST_OBJECT_UNLOCK(element);
+
+#if GST_CHECK_VERSION(1,1,0)
+    gst_vaapi_video_context_propagate(element, display);
+#endif
+
     return display != NULL;
 }
 
@@ -225,6 +254,7 @@ gst_vaapi_reply_to_query(GstQuery *query, GstVaapiDisplay *display)
     if (!display)
         return FALSE;
 
+#if !GST_CHECK_VERSION(1,1,0)
     types = gst_video_context_query_get_supported_types(query);
 
     if (!types)
@@ -300,6 +330,7 @@ gst_vaapi_reply_to_query(GstQuery *query, GstVaapiDisplay *display)
             }
         }
     }
+#endif /* !GST_CHECK_VERSION(1,1,0) */
     return res;
 }
 

@@ -30,7 +30,9 @@
 
 #include "gst/vaapi/sysdeps.h"
 #include <gst/video/video.h>
+#if !GST_CHECK_VERSION(1,1,0)
 #include <gst/video/videocontext.h>
+#endif
 
 #include "gstvaapipostproc.h"
 #include "gstvaapipluginutil.h"
@@ -84,6 +86,7 @@ gst_vaapipostproc_implements_iface_init(GstImplementsInterfaceClass *iface)
 #endif
 
 /* GstVideoContext interface */
+#if !GST_CHECK_VERSION(1,1,0)
 static void
 gst_vaapipostproc_set_video_context(
     GstVideoContext *context,
@@ -103,6 +106,7 @@ gst_video_context_interface_init(GstVideoContextInterface *iface)
 }
 
 #define GstVideoContextClass GstVideoContextInterface
+#endif
 G_DEFINE_TYPE_WITH_CODE(
     GstVaapiPostproc,
     gst_vaapipostproc,
@@ -111,8 +115,11 @@ G_DEFINE_TYPE_WITH_CODE(
     G_IMPLEMENT_INTERFACE(GST_TYPE_IMPLEMENTS_INTERFACE,
                           gst_vaapipostproc_implements_iface_init);
 #endif
+#if !GST_CHECK_VERSION(1,1,0)
     G_IMPLEMENT_INTERFACE(GST_TYPE_VIDEO_CONTEXT,
-                          gst_video_context_interface_init))
+                          gst_video_context_interface_init)
+#endif
+    )
 
 enum {
     PROP_0,
@@ -188,6 +195,25 @@ get_vaapipostproc_from_pad(GstPad *pad)
 static inline gboolean
 gst_vaapipostproc_ensure_display(GstVaapiPostproc *postproc)
 {
+#if GST_CHECK_VERSION(1,1,0)
+    GST_OBJECT_LOCK(postproc);
+    if (postproc->set_display) {
+        GstContext *context;
+
+        postproc->display = gst_vaapi_display_ref(postproc->set_display);
+        GST_OBJECT_UNLOCK(postproc);
+        context = gst_element_get_context(GST_ELEMENT_CAST(postproc));
+        if (!context)
+            context = gst_context_new();
+        context = gst_context_make_writable(context);
+        gst_context_set_vaapi_display(context, postproc->display);
+        gst_element_set_context(GST_ELEMENT_CAST(postproc), context);
+        gst_context_unref(context);
+        return TRUE;
+    }
+    GST_OBJECT_UNLOCK(postproc);
+#endif
+
     return gst_vaapi_ensure_display(postproc, GST_VAAPI_DISPLAY_TYPE_ANY,
         &postproc->display);
 }
@@ -524,6 +550,32 @@ gst_vaapipostproc_src_event(GST_PAD_EVENT_FUNCTION_ARGS)
     return success;
 }
 
+#if GST_CHECK_VERSION(1,1,0)
+static void
+gst_vaapipostproc_set_context(GstElement *element, GstContext *context)
+{
+    GstVaapiPostproc * const postproc = GST_VAAPIPOSTPROC(element);
+    GstVaapiDisplay *display = NULL;
+
+    if (gst_context_get_vaapi_display(context, &display)) {
+        GST_OBJECT_LOCK(postproc);
+        if (postproc->set_display)
+            gst_vaapi_display_unref(postproc->set_display);
+        postproc->set_display = display;
+        GST_OBJECT_UNLOCK(postproc);
+    }
+
+    GST_OBJECT_LOCK(postproc);
+    context = gst_context_copy(context);
+    gst_context_set_vaapi_display(context, postproc->display);
+    GST_OBJECT_UNLOCK(postproc);
+
+    GST_ELEMENT_CLASS(gst_vaapipostproc_parent_class)->set_context(element,
+        context);
+    gst_context_unref (context);
+}
+#endif
+
 static gboolean
 gst_vaapipostproc_query(GST_PAD_QUERY_FUNCTION_ARGS)
 {
@@ -663,6 +715,10 @@ gst_vaapipostproc_class_init(GstVaapiPostprocClass *klass)
     object_class->get_property  = gst_vaapipostproc_get_property;
 
     element_class->change_state = gst_vaapipostproc_change_state;
+
+#if GST_CHECK_VERSION(1,1,0)
+    element_class->set_context  = gst_vaapipostproc_set_context;
+#endif
 
     gst_element_class_set_static_metadata(element_class,
         "VA-API video postprocessing",

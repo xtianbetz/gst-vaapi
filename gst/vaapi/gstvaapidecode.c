@@ -30,7 +30,9 @@
 
 #include "gst/vaapi/sysdeps.h"
 #include <gst/vaapi/gstvaapidisplay.h>
+#if !GST_CHECK_VERSION(1,1,0)
 #include <gst/video/videocontext.h>
+#endif
 
 #include "gstvaapidecode.h"
 #include "gstvaapipluginutil.h"
@@ -102,6 +104,7 @@ gst_vaapidecode_implements_iface_init(GstImplementsInterfaceClass *iface)
 #endif
 
 /* GstVideoContext interface */
+#if !GST_CHECK_VERSION(1,1,0)
 static void
 gst_vaapidecode_set_video_context(GstVideoContext *context, const gchar *type,
     const GValue *value)
@@ -117,6 +120,8 @@ gst_video_context_interface_init(GstVideoContextInterface *iface)
 }
 
 #define GstVideoContextClass GstVideoContextInterface
+#endif
+
 G_DEFINE_TYPE_WITH_CODE(
     GstVaapiDecode,
     gst_vaapidecode,
@@ -125,8 +130,11 @@ G_DEFINE_TYPE_WITH_CODE(
     G_IMPLEMENT_INTERFACE(GST_TYPE_IMPLEMENTS_INTERFACE,
                           gst_vaapidecode_implements_iface_init);
 #endif
+#if !GST_CHECK_VERSION(1,1,0)
     G_IMPLEMENT_INTERFACE(GST_TYPE_VIDEO_CONTEXT,
-                          gst_video_context_interface_init))
+                          gst_video_context_interface_init)
+#endif
+    )
 
 static gboolean
 gst_vaapidecode_update_src_caps(GstVaapiDecode *decode,
@@ -505,9 +513,54 @@ error_create_pool:
 }
 #endif
 
+#if GST_CHECK_VERSION(1,1,0)
+static void
+gst_vaapidecode_set_context(GstElement *element, GstContext *context)
+{
+    GstVaapiDecode * const decode = GST_VAAPIDECODE(element);
+    GstVaapiDisplay *display = NULL;
+
+    if (gst_context_get_vaapi_display(context, &display)) {
+        GST_OBJECT_LOCK(decode);
+        if (decode->set_display)
+            gst_vaapi_display_unref(decode->set_display);
+        decode->set_display = display;
+        GST_OBJECT_UNLOCK(decode);
+    }
+
+    GST_OBJECT_LOCK(decode);
+    context = gst_context_copy(context);
+    gst_context_set_vaapi_display(context, decode->display);
+    GST_OBJECT_UNLOCK(decode);
+
+    GST_ELEMENT_CLASS(gst_vaapidecode_parent_class)->set_context(element,
+        context);
+    gst_context_unref (context);
+}
+#endif
+
 static inline gboolean
 gst_vaapidecode_ensure_display(GstVaapiDecode *decode)
 {
+#if GST_CHECK_VERSION(1,1,0)
+    GST_OBJECT_LOCK(decode);
+    if (decode->set_display) {
+        GstContext *context;
+
+        decode->display = gst_vaapi_display_ref(decode->set_display);
+        GST_OBJECT_UNLOCK(decode);
+        context = gst_element_get_context(GST_ELEMENT_CAST(decode));
+        if (!context)
+            context = gst_context_new();
+        context = gst_context_make_writable(context);
+        gst_context_set_vaapi_display(context, decode->display);
+        gst_element_set_context(GST_ELEMENT_CAST(decode), context);
+        gst_context_unref(context);
+        return TRUE;
+    }
+    GST_OBJECT_UNLOCK(decode);
+#endif
+
     return gst_vaapi_ensure_display(decode, GST_VAAPI_DISPLAY_TYPE_ANY,
         &decode->display);
 }
@@ -728,6 +781,10 @@ gst_vaapidecode_class_init(GstVaapiDecodeClass *klass)
         GST_DEBUG_FUNCPTR(gst_vaapidecode_decide_allocation);
 #endif
 
+#if GST_CHECK_VERSION(1,1,0)
+    element_class->set_context = GST_DEBUG_FUNCPTR(gst_vaapidecode_set_context);
+#endif
+
     gst_element_class_set_static_metadata(element_class,
         "VA-API decoder",
         "Codec/Decoder/Video",
@@ -835,6 +892,38 @@ gst_vaapidecode_query(GST_PAD_QUERY_FUNCTION_ARGS)
             gst_query_set_caps_result(query, caps);
             gst_caps_unref(caps);
             res = TRUE;
+            break;
+        }
+#endif
+#if GST_CHECK_VERSION(1,1,0)
+        case GST_QUERY_CONTEXT:{
+            guint i, n;
+
+            GST_PAD_QUERY_FUNCTION_CALL(decode->sinkpad_query,
+                decode->sinkpad, parent, query);
+
+            n = gst_query_get_n_context_types(query);
+            for (i = 0; i < n; i++) {
+                const gchar *context_type = NULL;
+
+                gst_query_parse_nth_context_type(query, i, &context_type);
+                if (g_strcmp0(context_type, GST_VAAPI_DISPLAY_CONTEXT_TYPE) == 0) {
+                    GstContext *context, *old_context;
+
+                    gst_query_parse_context(query, &old_context);
+                    if (old_context)
+                        context = gst_context_copy(old_context);
+                    else
+                        context = gst_context_new();
+
+                    gst_context_set_vaapi_display(context, decode->display);
+                    gst_query_set_context(query, context);
+                    gst_context_unref(context);
+                    break;
+                }
+            }
+
+            return TRUE;
             break;
         }
 #endif

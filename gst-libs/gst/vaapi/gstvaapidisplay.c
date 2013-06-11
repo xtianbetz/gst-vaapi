@@ -1863,3 +1863,33 @@ set_color_balance(GstVaapiDisplay *display, guint prop_id, gfloat v)
         return FALSE;
     return TRUE;
 }
+
+#if GST_CHECK_VERSION(1,1,0)
+G_DEFINE_BOXED_TYPE(GstVaapiDisplay, gst_vaapi_display,
+    (GBoxedCopyFunc) gst_vaapi_display_ref,
+    (GBoxedFreeFunc) gst_vaapi_display_unref);
+
+void
+gst_context_set_vaapi_display(
+    GstContext      *context,
+    GstVaapiDisplay *display)
+{
+  GstStructure *s;
+
+  s = gst_context_writable_structure(context);
+  gst_structure_set(s, GST_VAAPI_DISPLAY_CONTEXT_TYPE,
+      GST_TYPE_VAAPI_DISPLAY, display, NULL);
+}
+
+gboolean
+gst_context_get_vaapi_display(
+    GstContext       *context,
+    GstVaapiDisplay **display)
+{
+  const GstStructure *s;
+
+  s = gst_context_get_structure(context);
+  return gst_structure_get(s, GST_VAAPI_DISPLAY_CONTEXT_TYPE,
+      GST_TYPE_VAAPI_DISPLAY, display, NULL);
+}
+#endif

@@ -32,7 +32,10 @@
 #include "gst/vaapi/sysdeps.h"
 #include <gst/gst.h>
 #include <gst/video/video.h>
+#if !GST_CHECK_VERSION(1,1,0)
 #include <gst/video/videocontext.h>
+#endif
+
 #include <gst/vaapi/gstvaapivalue.h>
 #if USE_DRM
 # include <gst/vaapi/gstvaapidisplay_drm.h>
@@ -117,6 +120,7 @@ gst_vaapisink_implements_iface_init(GstImplementsInterfaceClass *iface)
 #endif
 
 /* GstVideoContext interface */
+#if !GST_CHECK_VERSION(1,1,0)
 static void
 gst_vaapisink_set_video_context(GstVideoContext *context, const gchar *type,
     const GValue *value)
@@ -130,6 +134,7 @@ gst_vaapisink_video_context_iface_init(GstVideoContextInterface *iface)
 {
     iface->set_context = gst_vaapisink_set_video_context;
 }
+#endif
 
 static void
 gst_vaapisink_video_overlay_iface_init(GstVideoOverlayInterface *iface);
@@ -142,8 +147,10 @@ G_DEFINE_TYPE_WITH_CODE(
     G_IMPLEMENT_INTERFACE(GST_TYPE_IMPLEMENTS_INTERFACE,
                           gst_vaapisink_implements_iface_init);
 #endif
+#if !GST_CHECK_VERSION(1,1,0)
     G_IMPLEMENT_INTERFACE(GST_TYPE_VIDEO_CONTEXT,
                           gst_vaapisink_video_context_iface_init);
+#endif
     G_IMPLEMENT_INTERFACE(GST_TYPE_VIDEO_OVERLAY,
                           gst_vaapisink_video_overlay_iface_init))
 
@@ -333,8 +340,28 @@ gst_vaapisink_ensure_display(GstVaapiSink *sink)
     GstVaapiRenderMode render_mode;
     const gboolean had_display = sink->display != NULL;
 
-    if (!gst_vaapi_ensure_display(sink, sink->display_type, &sink->display))
-        return FALSE;
+#if GST_CHECK_VERSION(1,1,0)
+    GST_OBJECT_LOCK(sink);
+    if (sink->set_display) {
+        GstContext *context;
+
+        sink->display = gst_vaapi_display_ref(sink->set_display);
+        GST_OBJECT_UNLOCK(sink);
+        context = gst_element_get_context(GST_ELEMENT_CAST(sink));
+        if (!context)
+            context = gst_context_new();
+        context = gst_context_make_writable(context);
+        gst_context_set_vaapi_display(context, sink->display);
+        gst_element_set_context(GST_ELEMENT_CAST(sink), context);
+        gst_context_unref(context);
+    } else {
+        GST_OBJECT_UNLOCK(sink);
+#endif
+        if (!gst_vaapi_ensure_display(sink, sink->display_type, &sink->display))
+            return FALSE;
+#if GST_CHECK_VERSION(1,1,0)
+    }
+#endif
 
     display_type = gst_vaapi_display_get_display_type(sink->display);
     if (display_type != sink->display_type || (!had_display && sink->display)) {
@@ -1123,15 +1150,117 @@ gst_vaapisink_buffer_alloc(
 }
 #endif
 
+#if GST_CHECK_VERSION(1,1,0)
+static void
+gst_vaapisink_set_context(GstElement *element, GstContext *context)
+{
+    GstVaapiSink * const sink = GST_VAAPISINK(element);
+    GstVaapiDisplay *display = NULL;
+
+    if (gst_context_get_vaapi_display(context, &display)) {
+        GST_OBJECT_LOCK(sink);
+        if (sink->set_display)
+            gst_vaapi_display_unref(sink->set_display);
+        sink->set_display = display;
+        GST_OBJECT_UNLOCK(sink);
+    }
+
+    GST_OBJECT_LOCK(sink);
+    context = gst_context_copy(context);
+    gst_context_set_vaapi_display(context, sink->display);
+    GST_OBJECT_UNLOCK(sink);
+
+    GST_ELEMENT_CLASS(gst_vaapisink_parent_class)->set_context(element,
+        context);
+
+    gst_context_unref (context);
+}
+#endif
+
+static gboolean
+gst_vaapisink_event(GstBaseSink *base_sink, GstEvent *event)
+{
+    GstVaapiSink * const sink = GST_VAAPISINK(base_sink);
+
+    switch (GST_EVENT_TYPE(event)) {
+#if GST_CHECK_VERSION(1,1,0)
+      case GST_EVENT_CONTEXT:{
+          GstContext *context;
+          GstVaapiDisplay *display;
+
+          gst_event_parse_context(event, &context);
+
+          if (gst_context_get_vaapi_display(context, &display)) {
+              GST_OBJECT_LOCK(sink);
+              if (sink->set_display)
+                  gst_vaapi_display_unref(sink->set_display);
+              sink->set_display = display;
+              GST_OBJECT_LOCK(sink);
+          }
+
+          gst_context_unref(context);
+
+          return GST_BASE_SINK_CLASS(gst_vaapisink_parent_class)->event(base_sink,
+              event);
+          break;
+      }
+#endif
+      default:
+          return GST_BASE_SINK_CLASS(gst_vaapisink_parent_class)->event(base_sink,
+              event);
+          break;
+    }
+}
+
 static gboolean
 gst_vaapisink_query(GstBaseSink *base_sink, GstQuery *query)
 {
     GstVaapiSink * const sink = GST_VAAPISINK(base_sink);
 
+#if !GST_CHECK_VERSION(1,1,0)
     if (gst_vaapi_reply_to_query(query, sink->display)) {
         GST_DEBUG("sharing display %p", sink->display);
         return TRUE;
     }
+#endif
+
+    switch(GST_QUERY_TYPE(query)) {
+#if GST_CHECK_VERSION(1,1,0)
+      case GST_QUERY_CONTEXT:{
+          guint i, n;
+
+          GST_BASE_SINK_CLASS(gst_vaapisink_parent_class)->query(base_sink,
+              query);
+
+          n = gst_query_get_n_context_types(query);
+          for (i = 0; i < n; i++) {
+              const gchar *context_type = NULL;
+
+              gst_query_parse_nth_context_type(query, i, &context_type);
+              if (g_strcmp0(context_type, GST_VAAPI_DISPLAY_CONTEXT_TYPE) == 0) {
+                  GstContext *context, *old_context;
+
+                  gst_query_parse_context(query, &old_context);
+                  if (old_context)
+                      context = gst_context_copy(old_context);
+                  else
+                      context = gst_context_new();
+
+                  gst_context_set_vaapi_display(context, sink->display);
+                  gst_query_set_context(query, context);
+                  gst_context_unref(context);
+                  break;
+              }
+          }
+
+          return TRUE;
+          break;
+      }
+#endif
+      default:
+          break;
+    }
+
     return GST_BASE_SINK_CLASS(gst_vaapisink_parent_class)->query(base_sink,
         query);
 }
@@ -1230,10 +1359,15 @@ gst_vaapisink_class_init(GstVaapiSinkClass *klass)
     basesink_class->preroll      = gst_vaapisink_show_frame;
     basesink_class->render       = gst_vaapisink_show_frame;
     basesink_class->query        = gst_vaapisink_query;
+    basesink_class->event        = gst_vaapisink_event;
 #if GST_CHECK_VERSION(1,0,0)
     basesink_class->propose_allocation = gst_vaapisink_propose_allocation;
 #else
     basesink_class->buffer_alloc = gst_vaapisink_buffer_alloc;
+#endif
+
+#if GST_CHECK_VERSION(1,1,0)
+    element_class->set_context = gst_vaapisink_set_context;
 #endif
 
     gst_element_class_set_static_metadata(element_class,

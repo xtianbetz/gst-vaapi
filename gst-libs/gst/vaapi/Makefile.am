@@ -127,6 +127,13 @@ libgstvaapi_source_c += $(libgstvaapi_jpegdec_source_c)
 libgstvaapi_source_h += $(libgstvaapi_jpegdec_source_h)
 endif
 
+libgstvaapi_videocontext_source_c = gstvaapivideocontext.c
+libgstvaapi_videocontext_source_h = gstvaapivideocontext.h
+if USE_GST_API_1_2p
+libgstvaapi_source_c += $(libgstvaapi_videocontext_source_c)
+libgstvaapi_source_priv_h += $(libgstvaapi_videocontext_source_h)
+endif
+
 libgstvaapi_drm_source_c =			\
 	gstvaapidisplay_drm.c			\
 	gstvaapiwindow_drm.c			\

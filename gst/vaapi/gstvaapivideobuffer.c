@@ -27,11 +27,82 @@
 
 #include "gst/vaapi/sysdeps.h"
 #include "gstvaapivideobuffer.h"
-#if USE_GLX
+#if USE_GLX && !GST_CHECK_VERSION(1,1,0)
 # include "gstvaapivideoconverter_glx.h"
 #endif
 
-#if GST_CHECK_VERSION(1,0,0)
+#if GST_CHECK_VERSION(1,1,0)
+
+#if USE_GLX
+#include <GL/gl.h>
+#include <gst/vaapi/gstvaapitexture.h>
+
+static GstVaapiTexture *texture = NULL;
+
+static void
+gst_vaapi_texure_upload_free(gpointer data)
+{
+    GstVaapiTexture *texture = data;
+
+    if (texture)
+        gst_vaapi_texture_replace(&texture, NULL);
+}
+
+static gboolean
+gst_vaapi_texture_upload(GstVideoGLTextureUploadMeta *meta, guint texture_id[4])
+{
+    GstVaapiVideoMeta * const vvmeta =
+        gst_buffer_get_vaapi_video_meta(meta->buffer);
+    GstVaapiTexture *texture = (GstVaapiTexture *) meta->user_data;
+
+    GstVaapiSurface * const surface = gst_vaapi_video_meta_get_surface(vvmeta);
+    GstVaapiDisplay *dpy =
+        gst_vaapi_object_get_display(GST_VAAPI_OBJECT(surface));
+
+    if (gst_vaapi_display_get_display_type(dpy) != GST_VAAPI_DISPLAY_TYPE_GLX)
+        return FALSE;
+
+    if (texture) {
+        GstVaapiDisplay *tex_dpy =
+            gst_vaapi_object_get_display(GST_VAAPI_OBJECT(texture));
+        if (tex_dpy != dpy)
+            gst_vaapi_texture_replace(&texture, NULL);
+    }
+
+    if (!texture) {
+        /* FIXME Should we assume target and format ? */
+        texture = gst_vaapi_texture_new_with_texture(dpy, texture_id[0],
+            GL_TEXTURE_2D, GL_RGBA);
+        meta->user_data = texture;
+    }
+
+    if (!gst_vaapi_apply_composition(surface, meta->buffer))
+        GST_WARNING("could not update buffer");
+
+    return gst_vaapi_texture_put_surface(texture, surface,
+        gst_vaapi_video_meta_get_render_flags(vvmeta));
+}
+#endif
+
+static GstBuffer *
+gst_surface_buffer_new(void)
+{
+    GstBuffer * const buffer = gst_buffer_new();
+
+#if USE_GLX
+    if (buffer) {
+        GstVideoGLTextureType tex_type[] = { GST_VIDEO_GL_TEXTURE_TYPE_RGBA };
+
+        gst_buffer_add_video_gl_texture_upload_meta (buffer,
+            GST_VIDEO_GL_TEXTURE_ORIENTATION_X_NORMAL_Y_NORMAL,
+            1, tex_type, gst_vaapi_texture_upload,
+            texture, NULL, gst_vaapi_texure_upload_free);
+    }
+#endif
+
+    return buffer;
+}
+#elif GST_CHECK_VERSION(1,0,0)
 #include <gst/video/gstsurfacemeta.h>
 
 #define GST_VAAPI_SURFACE_META_CAST(obj) \
@@ -143,7 +214,7 @@ gst_surface_buffer_new(void)
         gst_buffer_add_meta(buffer, GST_VAAPI_SURFACE_META_INFO, NULL);
     return buffer;
 }
-#else
+#else /* GStreamer 0.10 */
 #include <gst/video/gstsurfacebuffer.h>
 
 #define GST_VAAPI_TYPE_VIDEO_BUFFER \
@@ -236,7 +307,7 @@ gst_surface_buffer_new(void)
 {
     return GST_BUFFER_CAST(gst_mini_object_new(GST_TYPE_SURFACE_BUFFER));
 }
-#endif
+#endif /* GStreamer API  */
 
 static GFunc
 get_surface_converter(GstVaapiDisplay *display)
@@ -244,7 +315,7 @@ get_surface_converter(GstVaapiDisplay *display)
     GFunc func;
 
     switch (gst_vaapi_display_get_display_type(display)) {
-#if USE_GLX
+#if USE_GLX && !GST_CHECK_VERSION(1,1,0)
     case GST_VAAPI_DISPLAY_TYPE_GLX:
         func = (GFunc)gst_vaapi_video_converter_glx_new;
         break;

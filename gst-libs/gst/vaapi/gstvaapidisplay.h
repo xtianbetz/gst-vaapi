@@ -37,6 +37,20 @@ G_BEGIN_DECLS
 typedef struct _GstVaapiDisplayInfo             GstVaapiDisplayInfo;
 typedef struct _GstVaapiDisplay                 GstVaapiDisplay;
 
+#if GST_CHECK_VERSION(1,1,0)
+# define GST_VAAPI_DISPLAY_CONTEXT_TYPE "gst.vaapi.Display"
+# define GST_TYPE_VAAPI_DISPLAY (gst_vaapi_display_get_type())
+
+GType
+gst_vaapi_display_get_type(void);
+
+void
+gst_context_set_vaapi_display(GstContext *context, GstVaapiDisplay *display);
+
+gboolean
+gst_context_get_vaapi_display(GstContext *context, GstVaapiDisplay **display);
+#endif
+
 /**
  * GstVaapiDisplayType:
  * @GST_VAAPI_DISPLAY_TYPE_ANY: Automatic detection of the display type.

@@ -54,8 +54,10 @@ libgstvaapi_glx_source_c = gstvaapivideoconverter_glx.c
 libgstvaapi_glx_source_h = gstvaapivideoconverter_glx.h
 
 if USE_GLX
+if !USE_GST_API_1_2p
 libgstvaapi_source_c += $(libgstvaapi_glx_source_c)
 libgstvaapi_source_h += $(libgstvaapi_glx_source_h)
+endif
 endif
 
 libgstvaapi_1_0p_source_c = \

@@ -71,6 +71,9 @@ struct _GstVaapiSink {
     GstVaapiUploader   *uploader;
     GstCaps            *caps;
     GstVaapiDisplay    *display;
+#if GST_CHECK_VERSION(1,1,0)
+    GstVaapiDisplay    *set_display;
+#endif
     GstVaapiDisplayType display_type;
     GstVaapiWindow     *window;
     guint               window_width;

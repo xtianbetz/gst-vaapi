@@ -94,6 +94,9 @@ struct _GstVaapiPostproc {
     GstCaps                    *postproc_caps;
 
     GstVaapiDisplay            *display;
+#if GST_CHECK_VERSION(1,1,0)
+    GstVaapiDisplay            *set_display;
+#endif
     guint                       surface_width;
     guint                       surface_height;
 

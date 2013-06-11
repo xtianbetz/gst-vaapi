@@ -69,6 +69,9 @@ struct _GstVaapiDecode {
     GstCaps            *srcpad_caps;
     GstPadQueryFunction srcpad_query;
     GstVaapiDisplay    *display;
+#if GST_CHECK_VERSION(1,1,0)
+    GstVaapiDisplay    *set_display;
+#endif
     GstVaapiDecoder    *decoder;
     GMutex              decoder_mutex;
     GCond               decoder_ready;
